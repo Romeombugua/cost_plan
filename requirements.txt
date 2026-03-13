@@ -3,3 +3,6 @@ openpyxl
 easyocr
 pdf2image
 docling
+sentence-transformers
+numpy
+requests
