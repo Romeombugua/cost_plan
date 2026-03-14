@@ -225,7 +225,7 @@ class NRMMatcher:
                 candidates.append((
                     self.codes[idx],
                     self.short_names[idx],
-                    round(score, 3),
+                    f"{score * 100:.1f}%",
                 ))
         return candidates
 
