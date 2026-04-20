@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cost Plan Extractor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: #f0f2f5;
+      color: #1a1a2e;
+      min-height: 100vh;
+      display: flex;
+    }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      width: 220px;
+      min-height: 100vh;
+      background: #1e3a6e;
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+    }
+
+    .sidebar-brand {
+      padding: 1.5rem 1.25rem 1.25rem;
+      border-bottom: 1px solid rgba(255,255,255,.1);
+    }
+    .sidebar-brand .brand-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #fff;
+      line-height: 1.3;
+    }
+    .sidebar-brand .brand-sub {
+      font-size: 0.72rem;
+      color: rgba(255,255,255,.5);
+      margin-top: 0.2rem;
+    }
+
+    .sidebar-nav {
+      flex: 1;
+      padding: 1rem 0;
+      list-style: none;
+    }
+    .sidebar-nav li a {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      padding: 0.65rem 1.25rem;
+      font-size: 0.875rem;
+      color: rgba(255,255,255,.7);
+      text-decoration: none;
+      border-left: 3px solid transparent;
+      transition: background .15s, color .15s, border-color .15s;
+      cursor: pointer;
+    }
+    .sidebar-nav li a:hover {
+      background: rgba(255,255,255,.07);
+      color: #fff;
+    }
+    .sidebar-nav li a.active {
+      background: rgba(255,255,255,.12);
+      color: #fff;
+      border-left-color: #60a5fa;
+    }
+    .sidebar-nav .nav-icon { font-size: 1rem; flex-shrink: 0; }
+
+    /* ── Main content ── */
+    .main {
+      flex: 1;
+      padding: 2rem 2rem 3rem;
+      overflow-y: auto;
+    }
+
+    /* ── Panels ── */
+    .panel { display: none; max-width: 620px; }
+    .panel.active { display: block; }
+
+    .panel-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: #2f5496;
+      margin-bottom: 1.5rem;
+    }
+
+    /* ── Card ── */
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 2px 12px rgba(0,0,0,.08);
+      padding: 1.75rem;
+      margin-bottom: 1.25rem;
+    }
+
+    h2 { font-size: 0.82rem; font-weight: 700; color: #2f5496; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 0.75rem; }
+
+    /* ── Drop zone ── */
+    #drop-zone {
+      border: 2px dashed #bbb;
+      border-radius: 10px;
+      padding: 2rem 1rem;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+      background: #f8fafc;
+      margin-bottom: 1rem;
+      user-select: none;
+    }
+    #drop-zone.dragover  { border-color: #2f5496; background: #e8edf7; }
+    #drop-zone.has-files { border-color: #059669; background: #f0fdf4; }
+    #drop-zone .drop-icon { font-size: 2rem; margin-bottom: 0.4rem; }
+    #drop-zone .drop-text { font-size: 0.9rem; color: #555; }
+    #drop-zone .drop-hint { font-size: 0.76rem; color: #999; margin-top: 0.3rem; }
+    #pdf-input { display: none; }
+
+    /* ── File list ── */
+    #file-list { margin-bottom: 1rem; display: none; }
+    .file-item {
+      display: flex;
+      align-items: center;
+      padding: 0.4rem 0.6rem;
+      background: #f0f4f8;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      margin-bottom: 0.3rem;
+    }
+    .file-item-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-item-size { color: #888; font-size: 0.75rem; margin-left: 0.5rem; white-space: nowrap; }
+    .file-item-remove {
+      background: none; border: none; cursor: pointer;
+      color: #aaa; font-size: 1rem; margin-left: 0.5rem; padding: 0 0.2rem; line-height: 1;
+    }
+    .file-item-remove:hover { color: #c00; }
+
+    /* ── Run button ── */
+    #btn-run {
+      width: 100%; padding: 0.8rem;
+      background: #2f5496; color: #fff;
+      font-size: 1rem; font-weight: 700;
+      border: none; border-radius: 8px;
+      cursor: pointer;
+      transition: background .2s, opacity .2s;
+      letter-spacing: .03em;
+      margin-top: 0.25rem;
+    }
+    #btn-run:hover:not(:disabled) { background: #1e3a6e; }
+    #btn-run:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    /* ── Progress ── */
+    #progress-box {
+      display: none;
+      margin-top: 1rem;
+      padding: 0.7rem 1rem;
+      background: #eff6ff;
+      border: 1.5px solid #bfdbfe;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      color: #1e40af;
+    }
+
+    /* ── Error ── */
+    #error-box {
+      display: none;
+      margin-top: 1rem;
+      padding: 0.9rem 1.1rem;
+      background: #fef2f2;
+      border: 1.5px solid #fca5a5;
+      border-radius: 8px;
+      font-size: 0.88rem;
+      color: #991b1b;
+    }
+
+    /* ── Download banner ── */
+    #download-box {
+      display: none;
+      margin-top: 1.25rem;
+      padding: 1rem 1.25rem;
+      background: #ecfdf5;
+      border: 1.5px solid #6ee7b7;
+      border-radius: 8px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    #download-box span { font-size: 0.9rem; color: #065f46; font-weight: 600; }
+    #btn-download {
+      padding: 0.3rem 0.75rem;
+      background: #059669; color: #fff;
+      font-size: 0.78rem; font-weight: 600;
+      border: none; border-radius: 5px;
+      cursor: pointer; text-decoration: none;
+      white-space: nowrap;
+    }
+    #btn-download:hover { background: #047857; }
+
+    /* ── History list ── */
+    #history-list { list-style: none; }
+    #history-list li {
+      display: flex;
+      align-items: center;
+      padding: 0.55rem 0.75rem;
+      border-radius: 6px;
+      background: #f8fafc;
+      border: 1px solid #e5e7eb;
+      margin-bottom: 0.4rem;
+    }
+    .hist-info { flex: 1; overflow: hidden; }
+    .hist-name { font-size: 0.83rem; font-weight: 600; color: #1a1a2e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .hist-time { font-size: 0.75rem; color: #888; margin-top: 0.1rem; }
+    .hist-dl {
+      padding: 0.3rem 0.8rem;
+      background: #2f5496; color: #fff;
+      font-size: 0.78rem; font-weight: 600;
+      border-radius: 5px; text-decoration: none;
+      white-space: nowrap; margin-left: 0.75rem;
+    }
+    .hist-dl:hover { background: #1e3a6e; }
+    #history-empty { font-size: 0.82rem; color: #aaa; font-style: italic; }
+
+    /* ── Placeholder panels ── */
+    /* ── Dashboard stats ── */
+    .dash-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1rem;
+      margin-bottom: 1.25rem;
+    }
+    .stat-card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 2px 12px rgba(0,0,0,.08);
+      padding: 1.25rem 1rem;
+      text-align: center;
+    }
+    .stat-icon { font-size: 1.6rem; margin-bottom: 0.4rem; }
+    .stat-value { font-size: 1.6rem; font-weight: 700; color: #2f5496; line-height: 1.1; }
+    .stat-label { font-size: 0.75rem; color: #888; margin-top: 0.25rem; text-transform: uppercase; letter-spacing: .04em; }
+
+    /* ── Spinner ── */
+    .spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid rgba(255,255,255,.4);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+<!-- ── Sidebar ── -->
+<nav class="sidebar">
+  <div class="sidebar-brand">
+    <div class="brand-title">Cost Plan</div>
+    <div class="brand-sub">Extractor Suite</div>
+  </div>
+  <ul class="sidebar-nav">
+    <li><a href="#" class="nav-link active" data-panel="panel-upload">
+      <span class="nav-icon">📤</span> Upload Cost Plan
+    </a></li>
+    <li><a href="#" class="nav-link" data-panel="panel-extractions">
+      <span class="nav-icon">📋</span> My Extractions
+    </a></li>
+    <li><a href="#" class="nav-link" data-panel="panel-dashboard">
+      <span class="nav-icon">📊</span> Dashboard
+    </a></li>
+
+  </ul>
+</nav>
+
+<!-- ── Main area ── -->
+<main class="main">
+
+  <!-- Upload Cost Plan -->
+  <div id="panel-upload" class="panel active">
+    <div class="panel-title">Upload Cost Plan</div>
+    <div class="card">
+      <form id="extract-form">
+        {% csrf_token %}
+        <div id="drop-zone" role="button" tabindex="0" aria-label="Drop PDF files here or click to browse">
+          <div class="drop-icon">📂</div>
+          <div class="drop-text">Drag &amp; drop PDFs here, or <strong>click to browse</strong></div>
+          <div class="drop-hint">Multiple files supported &nbsp;·&nbsp; Max 50 MB each</div>
+        </div>
+        <input type="file" id="pdf-input" name="pdfs" accept=".pdf" multiple>
+        <div id="file-list"></div>
+        <button type="submit" id="btn-run" disabled>Run Extraction</button>
+      </form>
+      <div id="progress-box"></div>
+      <div id="error-box"></div>
+      <div id="download-box">
+        <span>&#10003; Extraction complete</span>
+        <a id="btn-download" href="#">Download</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- My Extractions -->
+  <div id="panel-extractions" class="panel">
+    <div class="panel-title">My Extractions</div>
+    <div class="card">
+      <h2>Recent Extractions</h2>
+      <p id="history-empty">No extractions yet.</p>
+      <ul id="history-list"></ul>
+    </div>
+  </div>
+
+  <!-- Dashboard -->
+  <div id="panel-dashboard" class="panel">
+    <div class="panel-title">Dashboard</div>
+    <div class="dash-stats">
+      <div class="stat-card">
+        <div class="stat-icon">📄</div>
+        <div class="stat-value" id="stat-total-runs">—</div>
+        <div class="stat-label">Total Extractions</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">📁</div>
+        <div class="stat-value" id="stat-total-files">—</div>
+        <div class="stat-label">Files Processed</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">🕐</div>
+        <div class="stat-value" id="stat-last-run">—</div>
+        <div class="stat-label">Last Extraction</div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Recent Activity</h2>
+      <p id="dash-history-empty" style="font-size:0.82rem;color:#aaa;font-style:italic;">No extractions yet.</p>
+      <ul id="dash-history-list" style="list-style:none;"></ul>
+    </div>
+  </div>
+
+</main>
+
+<script>
+  // ── Constants ──────────────────────────────────────────────────────────────
+  const MAX_SIZE = 50 * 1024 * 1024;
+
+  // ── State ──────────────────────────────────────────────────────────────────
+  let selectedFiles  = [];
+  let pollInterval   = null;
+  let elapsedInterval = null;
+
+  // ── Element refs ───────────────────────────────────────────────────────────
+  const dropZone    = document.getElementById("drop-zone");
+  const fileInput   = document.getElementById("pdf-input");
+  const fileListEl  = document.getElementById("file-list");
+  const btnRun      = document.getElementById("btn-run");
+  const progressBox = document.getElementById("progress-box");
+  const errorBox    = document.getElementById("error-box");
+  const downloadBox = document.getElementById("download-box");
+
+  // ── Drop zone interactions ──────────────────────────────────────────────────
+  dropZone.addEventListener("click", () => fileInput.click());
+  dropZone.addEventListener("keydown", e => {
+    if (e.key === "Enter" || e.key === " ") fileInput.click();
+  });
+  dropZone.addEventListener("dragover",  e => { e.preventDefault(); dropZone.classList.add("dragover"); });
+  dropZone.addEventListener("dragleave", ()  => dropZone.classList.remove("dragover"));
+  dropZone.addEventListener("drop", e => {
+    e.preventDefault();
+    dropZone.classList.remove("dragover");
+    addFiles(Array.from(e.dataTransfer.files));
+  });
+  fileInput.addEventListener("change", () => {
+    addFiles(Array.from(fileInput.files));
+    // Don't clear input.value here — doing so can invalidate File objects on
+    // some browsers before they are uploaded.  It is cleared after submission.
+  });
+
+  // ── File management ─────────────────────────────────────────────────────────
+  function addFiles(newFiles) {
+    for (const f of newFiles) {
+      if (!f.name.toLowerCase().endsWith(".pdf")) {
+        showError(`${f.name} is not a PDF and was skipped.`);
+        continue;
+      }
+      if (f.size > MAX_SIZE) {
+        showError(`${f.name} exceeds the 50 MB limit and was skipped.`);
+        continue;
+      }
+      if (!selectedFiles.find(x => x.name === f.name && x.size === f.size)) {
+        selectedFiles.push(f);
+      }
+    }
+    renderFileList();
+  }
+
+  function removeFile(idx) {
+    selectedFiles.splice(idx, 1);
+    renderFileList();
+  }
+
+  function renderFileList() {
+    fileListEl.innerHTML = "";
+    if (selectedFiles.length === 0) {
+      fileListEl.style.display = "none";
+      dropZone.classList.remove("has-files");
+      btnRun.disabled = true;
+      return;
+    }
+    fileListEl.style.display = "block";
+    dropZone.classList.add("has-files");
+    btnRun.disabled = false;
+    selectedFiles.forEach((f, i) => {
+      const div = document.createElement("div");
+      div.className = "file-item";
+      div.innerHTML =
+        `<span class="file-item-name" title="${esc(f.name)}">&#128196; ${esc(f.name)}</span>` +
+        `<span class="file-item-size">${fmtSize(f.size)}</span>` +
+        `<button type="button" class="file-item-remove" title="Remove" onclick="removeFile(${i})">&#x2715;</button>`;
+      fileListEl.appendChild(div);
+    });
+  }
+
+  // ── Form submission ─────────────────────────────────────────────────────────
+  document.getElementById("extract-form").addEventListener("submit", async function (e) {
+    e.preventDefault();
+    if (selectedFiles.length === 0) return;
+
+    // Reset UI
+    errorBox.style.display    = "none";
+    downloadBox.style.display = "none";
+    progressBox.style.display = "none";
+    btnRun.disabled = true;
+
+    // Elapsed timer
+    const startTime = Date.now();
+    btnRun.innerHTML = '<span class="spinner"></span>Processing… 0s';
+    elapsedInterval = setInterval(() => {
+      const s = Math.floor((Date.now() - startTime) / 1000);
+      const m = Math.floor(s / 60), rem = s % 60;
+      btnRun.innerHTML =
+        `<span class="spinner"></span>Processing… ${m > 0 ? m + "m " + rem + "s" : s + "s"}`;
+    }, 1000);
+
+    // Build FormData
+    const fd = new FormData();
+    for (const f of selectedFiles) fd.append("pdfs", f);
+    const csrfToken = getCsrf();
+
+    // POST to /run/
+    let jobId;
+    try {
+      const resp = await fetch("/run/", {
+        method: "POST",
+        headers: { "X-CSRFToken": csrfToken },
+        body: fd,
+      });
+      const data = await resp.json();
+      if (!resp.ok || data.error) { showError(data.error || resp.statusText); finishUI(); return; }
+      jobId = data.job_id;
+    } catch (err) { showError(String(err)); finishUI(); return; }
+
+    progressBox.textContent = "Starting…";
+    progressBox.style.display = "block";
+
+    // Poll /status/ every 3 seconds
+    pollInterval = setInterval(async () => {
+      try {
+        const resp = await fetch(`/status/${jobId}/`);
+        const data = await resp.json();
+
+        if (data.message) progressBox.textContent = data.message;
+
+        if (data.status === "done") {
+          clearInterval(pollInterval); pollInterval = null;
+          finishUI();
+          progressBox.style.display = "none";
+          const dl = document.getElementById("btn-download");
+          dl.href = `/download/${jobId}/`;
+          dl.textContent = `Download ${data.filename}`;
+          downloadBox.style.display = "flex";
+          loadHistory();
+        } else if (data.status === "error") {
+          clearInterval(pollInterval); pollInterval = null;
+          finishUI();
+          progressBox.style.display = "none";
+          showError(data.error || "An unknown error occurred.");
+        }
+      } catch (err) {
+        clearInterval(pollInterval); pollInterval = null;
+        finishUI();
+        showError("Lost connection to server.");
+      }
+    }, 3000);
+  });
+
+  function finishUI() {
+    if (elapsedInterval) { clearInterval(elapsedInterval); elapsedInterval = null; }
+    btnRun.disabled = (selectedFiles.length === 0);
+    btnRun.textContent = "Run Extraction";
+    fileInput.value = "";   // safe to clear now — files have been uploaded
+  }
+
+  function showError(msg) {
+    errorBox.textContent = "Error: " + msg;
+    errorBox.style.display = "block";
+  }
+
+  // ── History ─────────────────────────────────────────────────────────────────
+  async function loadHistory() {
+    try {
+      const resp = await fetch("/history/");
+      const data = await resp.json();
+      const entries = data.history || [];
+      renderHistory(entries);
+      renderDashboard(entries);
+    } catch (_) {}
+  }
+
+  function renderDashboard(entries) {
+    const totalRuns  = entries.length;
+    const totalFiles = entries.reduce((sum, e) => sum + (e.filenames_in ? e.filenames_in.length : 1), 0);
+    const lastRun    = entries.length ? entries[0].completed_at.slice(0, 16) : "—";
+
+    document.getElementById("stat-total-runs").textContent  = totalRuns  || "0";
+    document.getElementById("stat-total-files").textContent = totalFiles || "0";
+    document.getElementById("stat-last-run").textContent    = lastRun;
+
+    const ul    = document.getElementById("dash-history-list");
+    const empty = document.getElementById("dash-history-empty");
+    ul.innerHTML = "";
+    if (!entries.length) { empty.style.display = "block"; return; }
+    empty.style.display = "none";
+    for (const e of entries.slice(0, 5)) {
+      const label = e.filenames_in && e.filenames_in.length > 1
+        ? `${e.filenames_in.length} files`
+        : (e.filenames_in?.[0] ?? e.filename);
+      const li = document.createElement("li");
+      li.style.cssText = "display:flex;align-items:center;padding:0.55rem 0.75rem;border-radius:6px;background:#f8fafc;border:1px solid #e5e7eb;margin-bottom:0.4rem;";
+      li.innerHTML =
+        `<div class="hist-info">` +
+          `<div class="hist-name" title="${esc(label)}">${esc(label)}</div>` +
+          `<div class="hist-time">${esc(e.completed_at)}</div>` +
+        `</div>` +
+        `<a class="hist-dl" href="/download/${esc(e.job_id)}/">Download</a>`;
+      ul.appendChild(li);
+    }
+  }
+
+  function renderHistory(entries) {
+    const ul    = document.getElementById("history-list");
+    const empty = document.getElementById("history-empty");
+    ul.innerHTML = "";
+    if (!entries.length) { empty.style.display = "block"; return; }
+    empty.style.display = "none";
+    for (const e of entries) {
+      const label = e.filenames_in && e.filenames_in.length > 1
+        ? `${e.filenames_in.length} files`
+        : (e.filenames_in?.[0] ?? e.filename);
+      const li = document.createElement("li");
+      li.innerHTML =
+        `<div class="hist-info">` +
+          `<div class="hist-name" title="${esc(label)}">${esc(label)}</div>` +
+          `<div class="hist-time">${esc(e.completed_at)}</div>` +
+        `</div>` +
+        `<a class="hist-dl" href="/download/${esc(e.job_id)}/">Download</a>`;
+      ul.appendChild(li);
+    }
+  }
+
+  // ── Utilities ───────────────────────────────────────────────────────────────
+  function getCsrf() {
+    return document.cookie.split(";")
+      .map(c => c.trim())
+      .find(c => c.startsWith("csrftoken="))
+      ?.split("=")[1] ?? "";
+  }
+
+  function fmtSize(bytes) {
+    if (bytes < 1024)    return bytes + " B";
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
+    return (bytes / 1048576).toFixed(1) + " MB";
+  }
+
+  function esc(s) {
+    return String(s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  // Load history on page open
+  loadHistory();
+
+  // ── Sidebar navigation ──────────────────────────────────────────────────────
+  document.querySelectorAll(".nav-link").forEach(link => {
+    link.addEventListener("click", e => {
+      e.preventDefault();
+      const targetId = link.dataset.panel;
+      // Update active link
+      document.querySelectorAll(".nav-link").forEach(l => l.classList.remove("active"));
+      link.classList.add("active");
+      // Show target panel
+      document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
+      document.getElementById(targetId).classList.add("active");
+      // Refresh data when navigating to relevant panels
+      if (targetId === "panel-extractions" || targetId === "panel-dashboard") loadHistory();
+    });
+  });
+</script>
+</body>
+</html>

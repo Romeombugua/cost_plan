@@ -6,3 +6,5 @@ docling
 sentence-transformers
 numpy
 requests
+PyQt6
+pandas

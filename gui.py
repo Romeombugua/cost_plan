@@ -3,13 +3,16 @@ import logging
 import threading
 from pathlib import Path
 
+# torch must be imported before PyQt6 on Windows to avoid DLL initialization failure (WinError 1114)
+import torch  # noqa: F401
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QCheckBox, QTextEdit, QFileDialog, QMessageBox
 )
 from PyQt6.QtCore import pyqtSignal, QObject, Qt, QTimer
 
-from docling_extract import process_pdf, NRMMatcher, OllamaLLMVerifier, _find_nrm_db
+from docling_extract import process_pdf, NRMMatcher, OllamaLLMVerifier, _find_nrm_db, IcmsMatcher, UniclassMatcher
 from docling.document_converter import DocumentConverter
 
 class LogEmitter(QObject):
@@ -63,18 +66,6 @@ class DoclingGUI(QMainWindow):
         target_layout.addWidget(btn_br_folder)
         self.main_layout.addLayout(target_layout)
 
-        # NRM DB Path Selection
-        db_layout = QHBoxLayout()
-        db_layout.addWidget(QLabel("NRM DB (xlsx):"))
-        self.db_input = QLineEdit()
-        self.db_input.setText(str(Path(__file__).resolve().parent / "nrm_db.xlsx"))
-        db_layout.addWidget(self.db_input)
-        
-        btn_br_db = QPushButton("Browse")
-        btn_br_db.clicked.connect(self.browse_db)
-        db_layout.addWidget(btn_br_db)
-        self.main_layout.addLayout(db_layout)
-
         # Options
         options_layout = QHBoxLayout()
         self.chk_use_llm = QCheckBox("Use LLM for Verification (Ollama)")
@@ -126,11 +117,6 @@ class DoclingGUI(QMainWindow):
         if path:
             self.target_input.setText(path)
 
-    def browse_db(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select NRM Database", "", "Excel Files (*.xlsx)")
-        if path:
-            self.db_input.setText(path)
-
     def start_processing(self):
         target = self.target_input.text()
         if not target:
@@ -139,13 +125,12 @@ class DoclingGUI(QMainWindow):
 
         self.btn_run.setEnabled(False)
         self.btn_run.setText("Processing...")
-        
-        use_llm = self.chk_use_llm.isChecked()
-        db_path = self.db_input.text()
-        
-        threading.Thread(target=self.process, args=(target, db_path, use_llm), daemon=True).start()
 
-    def process(self, target_path_str, nrm_db_path_str, use_llm):
+        use_llm = self.chk_use_llm.isChecked()
+
+        threading.Thread(target=self.process, args=(target, use_llm), daemon=True).start()
+
+    def process(self, target_path_str, use_llm):
         log = logging.getLogger(__name__)
         target = Path(target_path_str)
 
@@ -161,10 +146,7 @@ class DoclingGUI(QMainWindow):
                 log.error(f"Invalid path: {target}")
                 return
 
-            if not nrm_db_path_str:
-                nrm_db_path = _find_nrm_db(target)
-            else:
-                nrm_db_path = Path(nrm_db_path_str)
+            nrm_db_path = _find_nrm_db(target)
 
             nrm_matcher = None
             if nrm_db_path and nrm_db_path.exists():
@@ -172,6 +154,14 @@ class DoclingGUI(QMainWindow):
                 nrm_matcher = NRMMatcher(nrm_db_path)
             else:
                 log.warning("NRM database not found — skipping NRM enrichment.")
+
+            icms_matcher = None
+            uniclass_matcher = None
+            if nrm_matcher:
+                log.info("Building ICMS matcher ...")
+                icms_matcher = IcmsMatcher(model=nrm_matcher.model)
+                log.info("Building Uniclass matcher ...")
+                uniclass_matcher = UniclassMatcher(model=nrm_matcher.model)
 
             llm_verifier = None
             if nrm_matcher and use_llm:
@@ -188,7 +178,10 @@ class DoclingGUI(QMainWindow):
 
             for pdf_file in pdf_files:
                 try:
-                    process_pdf(converter, pdf_file, nrm_matcher, llm_verifier)
+                    process_pdf(
+                        converter, pdf_file, nrm_matcher, llm_verifier,
+                        icms_matcher, uniclass_matcher,
+                    )
                 except Exception as exc:
                     log.error(f"FAILED {pdf_file.name}: {exc}")
 

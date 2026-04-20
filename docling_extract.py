@@ -28,6 +28,8 @@ import numpy as np
 import openpyxl
 import requests
 from docling.document_converter import DocumentConverter
+from data.icms_data import ICMS_CATALOGUE
+from data.uniclass_data import UNICLASS_CATALOGUE
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
@@ -60,6 +62,10 @@ CELL_FONT = Font(name="Calibri", size=11)
 CELL_ALIGNMENT = Alignment(vertical="top", wrap_text=True)
 NRM_FONT = Font(name="Calibri", size=11, color="2E75B6")
 NRM_FILL = PatternFill(start_color="F2F7FB", end_color="F2F7FB", fill_type="solid")
+ICMS_FONT = Font(name="Calibri", size=11, color="375623")
+ICMS_FILL = PatternFill(start_color="EBF1DE", end_color="EBF1DE", fill_type="solid")
+UNICLASS_FONT = Font(name="Calibri", size=11, color="7030A0")
+UNICLASS_FILL = PatternFill(start_color="F3EAF9", end_color="F3EAF9", fill_type="solid")
 THIN_BORDER = Border(
     left=Side(style="thin"),
     right=Side(style="thin"),
@@ -238,14 +244,18 @@ class NRMMatcher:
         return None, None, None
 
     # ------------------------------------------------------------------
-    def enrich_dataframe(self, df, llm_verifier=None):
+    def enrich_dataframe(self, df, llm_verifier=None, icms_matcher=None, uniclass_matcher=None):
         """
-        Add NRM Code, NRM Description, and Match Confidence columns
-        to a DataFrame. Optionally uses an LLM verifier for re-ranking.
+        Add NRM, ICMS, and/or Uniclass code columns to a DataFrame.
+        Optionally uses an LLM verifier for NRM re-ranking.
         """
         nrm_codes = []
         nrm_descs = []
         nrm_confs = []
+        icms_codes = [] if icms_matcher else None
+        icms_descs = [] if icms_matcher else None
+        uniclass_codes = [] if uniclass_matcher else None
+        uniclass_descs = [] if uniclass_matcher else None
 
         # Find the description column (first column with mostly text values)
         desc_col = self._find_description_column(df)
@@ -258,24 +268,37 @@ class NRMMatcher:
                 nrm_codes.append("")
                 nrm_descs.append("")
                 nrm_confs.append("")
-                continue
-
-            # Use LLM to verify/re-rank if available
-            if llm_verifier and len(candidates) > 1:
-                code, desc, conf = llm_verifier.verify(
-                    text, candidates,
-                )
             else:
-                code, desc, conf = candidates[0]
+                # Use LLM to verify/re-rank if available
+                if llm_verifier and len(candidates) > 1:
+                    code, desc, conf = llm_verifier.verify(text, candidates)
+                else:
+                    code, desc, conf = candidates[0]
 
-            nrm_codes.append(code or "")
-            nrm_descs.append(desc or "")
-            nrm_confs.append(conf if conf else "")
+                nrm_codes.append(code or "")
+                nrm_descs.append(desc or "")
+                nrm_confs.append(conf if conf else "")
+
+            if icms_matcher is not None:
+                ic, id_ = icms_matcher.match(text)
+                icms_codes.append(ic or "")
+                icms_descs.append(id_ or "")
+
+            if uniclass_matcher is not None:
+                uc, ud = uniclass_matcher.match(text)
+                uniclass_codes.append(uc or "")
+                uniclass_descs.append(ud or "")
 
         df = df.copy()
         df["NRM Code"] = nrm_codes
         df["NRM Description"] = nrm_descs
         df["Match Confidence"] = nrm_confs
+        if icms_matcher is not None:
+            df["ICMS Code"] = icms_codes
+            df["ICMS Description"] = icms_descs
+        if uniclass_matcher is not None:
+            df["Uniclass Code"] = uniclass_codes
+            df["Uniclass Description"] = uniclass_descs
         return df
 
     # ------------------------------------------------------------------
@@ -297,6 +320,118 @@ class NRMMatcher:
                 best_col = col_idx
 
         return best_col
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  ICMS MATCHER  (semantic matching against ICMS 3rd Edition catalogue)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class IcmsMatcher:
+    """
+    Semantic matcher that maps free-text descriptions to ICMS 3rd Edition
+    codes using sentence embeddings.  Accepts a pre-loaded SentenceTransformer
+    model so the ~80 MB model weights are only loaded once when used alongside
+    NRMMatcher.
+    """
+
+    MODEL_NAME = "all-MiniLM-L6-v2"
+    DEFAULT_THRESHOLD = 0.30
+
+    def __init__(self, model=None, threshold=None):
+        self.threshold = threshold or self.DEFAULT_THRESHOLD
+        self.codes = []
+        self.descriptions = []
+        self.embeddings = None
+        self.model = model  # share with NRMMatcher to avoid double load
+
+        self._build_index()
+
+    def _build_index(self):
+        for elem in ICMS_CATALOGUE:
+            self.codes.append(elem.code)
+            self.descriptions.append(elem.description)
+
+        if self.model is None:
+            from sentence_transformers import SentenceTransformer
+            log.info("Loading sentence-transformer model for ICMS matching ...")
+            self.model = SentenceTransformer(self.MODEL_NAME)
+
+        log.info("Encoding ICMS descriptions (%d entries) ...", len(self.codes))
+        self.embeddings = self.model.encode(
+            self.descriptions, normalize_embeddings=True, show_progress_bar=False,
+        )
+        log.info("ICMS embedding index ready")
+
+    def match(self, text):
+        """Return (icms_code, icms_description) for best match, or (None, None)."""
+        if not text or SKIP_PATTERNS.match(text.strip()):
+            return None, None
+        query_emb = self.model.encode(
+            [text], normalize_embeddings=True, show_progress_bar=False,
+        )
+        sims = (query_emb @ self.embeddings.T).flatten()
+        idx = int(np.argmax(sims))
+        if float(sims[idx]) >= self.threshold:
+            return self.codes[idx], self.descriptions[idx]
+        return None, None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  UNICLASS MATCHER  (semantic matching against Uniclass 2015 EF table)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class UniclassMatcher:
+    """
+    Semantic matcher that maps free-text descriptions to Uniclass 2015
+    codes (EF — Elements/Functions table by default).
+    Accepts a pre-loaded SentenceTransformer model for efficient reuse.
+    """
+
+    MODEL_NAME = "all-MiniLM-L6-v2"
+    DEFAULT_THRESHOLD = 0.30
+
+    def __init__(self, model=None, threshold=None, table="EF"):
+        self.threshold = threshold or self.DEFAULT_THRESHOLD
+        self.table = table
+        self.codes = []
+        self.descriptions = []
+        self.embeddings = None
+        self.model = model
+
+        self._build_index()
+
+    def _build_index(self):
+        for entry in UNICLASS_CATALOGUE:
+            if entry.table == self.table:
+                self.codes.append(entry.code)
+                self.descriptions.append(entry.description)
+
+        if self.model is None:
+            from sentence_transformers import SentenceTransformer
+            log.info("Loading sentence-transformer model for Uniclass matching ...")
+            self.model = SentenceTransformer(self.MODEL_NAME)
+
+        log.info(
+            "Encoding Uniclass %s descriptions (%d entries) ...",
+            self.table, len(self.codes),
+        )
+        self.embeddings = self.model.encode(
+            self.descriptions, normalize_embeddings=True, show_progress_bar=False,
+        )
+        log.info("Uniclass %s embedding index ready", self.table)
+
+    def match(self, text):
+        """Return (uniclass_code, uniclass_description) for best match, or (None, None)."""
+        if not text or SKIP_PATTERNS.match(text.strip()):
+            return None, None
+        query_emb = self.model.encode(
+            [text], normalize_embeddings=True, show_progress_bar=False,
+        )
+        sims = (query_emb @ self.embeddings.T).flatten()
+        idx = int(np.argmax(sims))
+        if float(sims[idx]) >= self.threshold:
+            return self.codes[idx], self.descriptions[idx]
+        return None, None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -436,6 +571,11 @@ def write_tables_to_excel(tables_data, output_path):
     LABEL_FONT = Font(name="Calibri", bold=True, size=12, color="1F3864")
     GAP_ROWS = 2
 
+    # Column-name sets for per-family styling
+    NRM_COLS = {"NRM Code", "NRM Description", "Match Confidence"}
+    ICMS_COLS = {"ICMS Code", "ICMS Description"}
+    UNICLASS_COLS = {"Uniclass Code", "Uniclass Description"}
+
     wb = Workbook()
     ws = wb.active
     ws.title = "Extracted Tables"
@@ -452,10 +592,7 @@ def write_tables_to_excel(tables_data, output_path):
     for t_idx, entry in enumerate(tables_data):
         label = entry["sheet_name"]
         df = entry["dataframe"]
-        num_original_cols = len(df.columns)
-        # Identify which columns are NRM-enriched (last 3 if present)
-        has_nrm = "NRM Code" in df.columns
-        nrm_start_col = num_original_cols - 2 if has_nrm else None  # 1-indexed later
+        col_names = list(df.columns)
 
         # -- Table label row --
         label_cell = ws.cell(
@@ -466,7 +603,7 @@ def write_tables_to_excel(tables_data, output_path):
         current_row += 1
 
         # -- Header row --
-        for c_idx, col_name in enumerate(df.columns, start=1):
+        for c_idx, col_name in enumerate(col_names, start=1):
             cell = ws.cell(row=current_row, column=c_idx, value=str(col_name))
             cell.font = HEADER_FONT
             cell.fill = HEADER_FILL
@@ -477,16 +614,21 @@ def write_tables_to_excel(tables_data, output_path):
         # -- Data rows --
         for row_tuple in df.itertuples(index=False):
             for c_idx, value in enumerate(row_tuple, start=1):
+                col_name = col_names[c_idx - 1]
                 cell = ws.cell(row=current_row, column=c_idx, value=value)
                 cell.border = THIN_BORDER
-                # Style NRM columns differently
-                if has_nrm and c_idx > (num_original_cols - 3):
+                cell.alignment = CELL_ALIGNMENT
+                if col_name in NRM_COLS:
                     cell.font = NRM_FONT
                     cell.fill = NRM_FILL
-                    cell.alignment = CELL_ALIGNMENT
+                elif col_name in ICMS_COLS:
+                    cell.font = ICMS_FONT
+                    cell.fill = ICMS_FILL
+                elif col_name in UNICLASS_COLS:
+                    cell.font = UNICLASS_FONT
+                    cell.fill = UNICLASS_FILL
                 else:
                     cell.font = CELL_FONT
-                    cell.alignment = CELL_ALIGNMENT
             current_row += 1
 
         current_row += GAP_ROWS
@@ -501,13 +643,6 @@ def write_tables_to_excel(tables_data, output_path):
                     max_len = max(max_len, len(str(cell.value)))
         ws.column_dimensions[col_letter].width = min(max_len + 4, 60)
 
-    # -- Footer note --
-    note_cell = ws.cell(
-        row=current_row, column=1,
-        value="[Extracted via Docling AI (TableFormer) | NRM matching via sentence-transformers]",
-    )
-    note_cell.font = Font(name="Calibri", size=9, italic=True, color="888888")
-
     wb.save(output_path)
     log.info("Saved  %s  (%d table(s) on 1 sheet)", output_path, len(tables_data))
 
@@ -516,10 +651,11 @@ def write_tables_to_excel(tables_data, output_path):
 #  MAIN PIPELINE
 # ═══════════════════════════════════════════════════════════════════════════
 
-def process_pdf(converter, pdf_path, nrm_matcher=None, llm_verifier=None):
+def process_pdf(converter, pdf_path, nrm_matcher=None, llm_verifier=None,
+                icms_matcher=None, uniclass_matcher=None):
     """
     Extract every table from a PDF using Docling, optionally enrich
-    with NRM codes (and LLM verification), and write to Excel.
+    with NRM, ICMS, and/or Uniclass codes, and write to Excel.
     """
     pdf_path = Path(pdf_path)
     output_path = pdf_path.with_name(pdf_path.stem + "_docling_tables.xlsx")
@@ -548,9 +684,14 @@ def process_pdf(converter, pdf_path, nrm_matcher=None, llm_verifier=None):
 
             sheet_name = f"{page_label}_Table_{t_idx + 1}" if page_label else f"Table_{t_idx + 1}"
 
-            # Enrich with NRM codes if matcher is available
+            # Enrich with NRM / ICMS / Uniclass codes if matchers are available
             if nrm_matcher:
-                df = nrm_matcher.enrich_dataframe(df, llm_verifier=llm_verifier)
+                df = nrm_matcher.enrich_dataframe(
+                    df,
+                    llm_verifier=llm_verifier,
+                    icms_matcher=icms_matcher,
+                    uniclass_matcher=uniclass_matcher,
+                )
 
             log.info(
                 "  Table %d: %d rows x %d cols %s",
@@ -634,6 +775,15 @@ def main():
     else:
         log.warning("NRM database not found — skipping NRM enrichment.")
 
+    # Initialise ICMS and Uniclass matchers (share model to avoid double load)
+    icms_matcher = None
+    uniclass_matcher = None
+    if nrm_matcher:
+        log.info("Building ICMS matcher ...")
+        icms_matcher = IcmsMatcher(model=nrm_matcher.model)
+        log.info("Building Uniclass matcher ...")
+        uniclass_matcher = UniclassMatcher(model=nrm_matcher.model)
+
     # Initialise LLM verifier (Ollama)
     llm_verifier = None
     if nrm_matcher and not skip_llm:
@@ -661,7 +811,10 @@ def main():
     results = []
     for pdf_file in pdf_files:
         try:
-            out = process_pdf(converter, pdf_file, nrm_matcher, llm_verifier)
+            out = process_pdf(
+                converter, pdf_file, nrm_matcher, llm_verifier,
+                icms_matcher, uniclass_matcher,
+            )
             results.append((pdf_file.name, out, None))
         except Exception as exc:
             log.error("FAILED  %s : %s", pdf_file.name, exc)
