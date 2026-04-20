@@ -17,6 +17,7 @@ SECRET_KEY = "django-insecure-costplan-dev-key-change-in-production"
 DEBUG = True
 
 ALLOWED_HOSTS = ["*"]
+CSRF_TRUSTED_ORIGINS = ['https://extractor.adw.dev']
 
 INSTALLED_APPS = [
     "django.contrib.staticfiles",
